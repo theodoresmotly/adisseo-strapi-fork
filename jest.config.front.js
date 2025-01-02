@@ -1,12 +1,11 @@
 'use strict';
 
-/** @type {import('jest').Config} */
-const config = {
-  projects: [
-    '<rootDir>/packages/plugins/*/jest.config.front.js',
-    '<rootDir>/packages/core/*/jest.config.front.js',
-    '<rootDir>/scripts/*/jest.config.front.js',
-  ],
+module.exports = {
+  preset: '../../../jest-preset.front.js',
+  collectCoverageFrom: ['<rootDir>/packages/core/admin/admin/**/*.js'],
+  displayName: 'Core admin',
+  moduleNameMapper: {
+    '^@tests/(.*)$': '<rootDir>/admin/tests/$1',
+  },
+  setupFilesAfterEnv: ['./admin/tests/setup.ts'],
 };
-
-module.exports = config;

@@ -47,9 +47,6 @@
 *.tmpl text
 *.phtml text
 
-# server config
-.htaccess text
-
 # git config
 .gitattributes text
 .gitignore text
@@ -104,8 +101,3 @@ AUTHORS text
 *.woff binary
 *.pyc binary
 *.pdf binary
-
-# yarn
-/.yarn/** linguist-vendored
-/.yarn/releases/* binary
-/.yarn/plugins/**/* binary
