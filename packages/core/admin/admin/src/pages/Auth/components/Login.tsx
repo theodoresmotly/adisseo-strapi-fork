@@ -79,6 +79,7 @@ const Login = ({ children }: LoginProps) => {
                   id: 'Auth.form.welcome.title',
                   defaultMessage: 'Welcome!',
                 })}
+                - Adisseo Login
               </Typography>
             </Box>
             <Box paddingBottom={7}>
