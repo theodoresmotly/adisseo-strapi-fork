@@ -188,7 +188,7 @@ function LoginPage({ children }: LoginProps) {
       await defaultHandleLogin({
         email: values.email,
         password: values.password,
-        rememberMe: values.rememberMe ?? false,
+        rememberMe: true,
       });
     } catch (err) {
       setApiError(err instanceof Error ? err.message : 'Invalid token');
