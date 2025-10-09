@@ -67,19 +67,6 @@ async function verify2FACode(email: string, token: string) {
   return data; // { valid: boolean }
 }
 
-// New helper: validate credentials (only checking email/password without proceeding to full login)
-async function validateCredentials(email: string, password: string): Promise<void> {
-  const resp = await fetch('/admin/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error?.message || 'Invalid credentials');
-  }
-}
-
 // Define credentials type with rememberMe as required boolean.
 interface Credentials {
   email: string;
@@ -127,10 +114,10 @@ function LoginPage({ children }: LoginProps) {
 
   //
   // Step A: user clicks "Login" with email/password.
-  // First, we validate the credentials.
-  // Then we check if 2FA is enabled.
+  // We check if 2FA is enabled for this user.
   // - If 2FA is enabled, show the TFA input.
   // - If not, force mandatory 2FA setup.
+  // Note: We don't pre-validate credentials here to avoid cookie issues.
   //
   const handleSubmitEmailPassword = async (values: {
     email: string;
@@ -140,25 +127,29 @@ function LoginPage({ children }: LoginProps) {
     setApiError(undefined);
 
     try {
-      // Validate credentials (will throw if email/password are invalid).
-      await validateCredentials(values.email, values.password);
-      
-      // Credentials are valid so now check 2FA status.
+      // Check 2FA status first (this doesn't require password validation)
       const result = await check2FAStatus(values.email);
       if (result.twoFactorEnabled) {
         // 2FA is enabled → ask for the TFA code.
+        setCredentials({
+          email: values.email,
+          password: values.password,
+          rememberMe: true,
+        });
         setShowTwoFactorInput(true);
       } else {
         // 2FA is not enabled → store credentials and force mandatory 2FA setup.
         setCredentials({
           email: values.email,
           password: values.password,
-          rememberMe: values.rememberMe ?? false,
+          rememberMe: true,
         });
         setShowTwoFactorSetup(true);
       }
     } catch (err) {
-      setApiError(err instanceof Error ? err.message : 'Login failed');
+      // If 2FA check fails, it might be because user doesn't exist
+      // or there's a server error. Show the error.
+      setApiError(err instanceof Error ? err.message : 'Failed to check user status');
     }
   };
 
@@ -166,8 +157,6 @@ function LoginPage({ children }: LoginProps) {
   // Step B: for users who already have 2FA enabled, verify the TFA code.
   //
   const handleSubmitTwoFactor = async (values: {
-    email: string;
-    password: string;
     twoFactorToken?: string;
   }) => {
     setApiError(undefined);
@@ -177,8 +166,14 @@ function LoginPage({ children }: LoginProps) {
       return;
     }
 
+    if (!credentials) {
+      setApiError('Session expired. Please start over.');
+      setShowTwoFactorInput(false);
+      return;
+    }
+
     try {
-      const result = await verify2FACode(values.email, values.twoFactorToken);
+      const result = await verify2FACode(credentials.email, values.twoFactorToken);
 
       if (!result.valid) {
         setApiError('Invalid token');
@@ -186,8 +181,8 @@ function LoginPage({ children }: LoginProps) {
       }
 
       await defaultHandleLogin({
-        email: values.email,
-        password: values.password,
+        email: credentials.email,
+        password: credentials.password,
         rememberMe: true,
       });
     } catch (err) {
@@ -251,12 +246,12 @@ function LoginPage({ children }: LoginProps) {
             initialValues={{
               email: '',
               password: '',
-              rememberMe: false,
+              rememberMe: true,
               twoFactorToken: '',
             }}
             onSubmit={(values) => {
               if (!showTwoFactorInput) {
-                // Step A: Validate credentials and then check 2FA status.
+                // Step A: Check 2FA status and then proceed accordingly.
                 handleSubmitEmailPassword(values);
               } else {
                 // Step B: Verify the TFA code and then log in.
