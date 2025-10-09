@@ -89,65 +89,7 @@ function LoginPage({ children }: LoginProps) {
   // Default Strapi Admin `login` from useAuth
   const { login } = useAuth('Login', (auth) => auth);
 
-  // Custom login handler that bypasses cookie issues by using a direct API call
-  // and manually handling the session management
-  const customHandleLogin = async (body: { email: string; password: string; rememberMe: boolean }) => {
-    setApiError(undefined);
-
-    try {
-      const resp = await fetch('/admin/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Forwarded-Proto': 'https',
-        },
-        body: JSON.stringify(body),
-        credentials: 'include', // This will handle cookies if they work
-      });
-
-      const data = await resp.json();
-
-      // Handle both success and cookie error cases
-      if (resp.ok) {
-        // Success case - navigate normally
-        const redirectTo = query.get('redirectTo');
-        const redirectUrl = redirectTo ? decodeURIComponent(redirectTo) : '/';
-        navigate(redirectUrl);
-        return;
-      }
-
-      // Handle error cases
-      const message = data.error?.message ?? 'Something went wrong';
-
-      if (camelCase(message).toLowerCase() === 'usernotactive') {
-        navigate('/auth/oops');
-        return;
-      }
-
-      // Check if it's a cookie-related error
-      if (message.includes('secure cookie') || message.includes('cookie') || resp.status === 500) {
-        // For cookie errors, show a message but attempt to proceed
-        console.warn('Cookie security issue detected, but 2FA was successful. Attempting to proceed...');
-
-        // Wait a moment and try to navigate anyway
-        setTimeout(() => {
-          const redirectTo = query.get('redirectTo');
-          const redirectUrl = redirectTo ? decodeURIComponent(redirectTo) : '/';
-          navigate(redirectUrl);
-        }, 1000);
-
-        setApiError('Authentication successful! Redirecting... (Note: There may be a session issue due to HTTPS configuration)');
-        return;
-      }
-
-      setApiError(message);
-      return;
-
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Something went wrong';
-      setApiError(message);
-    }
-  };  // Fallback to original login for non-2FA flows
+  // Default login handler that calls the standard admin login endpoint.
   const defaultHandleLogin = async (body: { email: string; password: string; rememberMe: boolean }) => {
     setApiError(undefined);
 
@@ -161,6 +103,13 @@ function LoginPage({ children }: LoginProps) {
         return;
       }
 
+      if (message.toLowerCase().includes('secure cookie')) {
+        setApiError(
+          'Login failed because secure cookies are required. Please serve the admin over HTTPS or disable secure cookies in configuration.'
+        );
+        return res;
+      }
+
       setApiError(message);
     } else {
       // On success, navigate to the redirect URL (or homepage).
@@ -168,6 +117,8 @@ function LoginPage({ children }: LoginProps) {
       const redirectUrl = redirectTo ? decodeURIComponent(redirectTo) : '/';
       navigate(redirectUrl);
     }
+
+    return res;
   };
 
   //
@@ -239,11 +190,14 @@ function LoginPage({ children }: LoginProps) {
         return;
       }
 
-      await customHandleLogin({
+      const loginResponse = await defaultHandleLogin({
         email: credentials.email,
         password: credentials.password,
         rememberMe: credentials.rememberMe,
       });
+      if (loginResponse && 'error' in loginResponse) {
+        return;
+      }
     } catch (err) {
       setApiError(err instanceof Error ? err.message : 'Invalid token');
     }
@@ -256,7 +210,7 @@ function LoginPage({ children }: LoginProps) {
         email={credentials.email}
         onSetupComplete={async () => {
           // Once 2FA setup is complete, complete the login.
-          await customHandleLogin(credentials);
+          await defaultHandleLogin(credentials);
         }}
       />
     );
