@@ -52,23 +52,6 @@ async function check2FAStatus(email: string) {
   return await resp.json(); // { twoFactorEnabled: boolean }
 }
 
-// Helper: call /deploy-plugin/tfa-login (POST) with { email, password, token }
-// This is a custom endpoint that handles both credential validation and 2FA in one step
-async function authenticate2FA(email: string, password: string, token: string) {
-  const resp = await fetch('/deploy-plugin/tfa-login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, token }),
-    credentials: 'include',
-  });
-
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data?.message || 'Authentication failed');
-  }
-  return data; // Should return { success: true, redirectUrl?: string }
-}
-
 // Helper: call /deploy-plugin/tfa-check-code (POST) with { email, token }
 async function verify2FACode(email: string, token: string) {
   const resp = await fetch('/deploy-plugin/tfa-check-code', {
@@ -114,7 +97,10 @@ function LoginPage({ children }: LoginProps) {
     try {
       const resp = await fetch('/admin/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-Proto': 'https',
+        },
         body: JSON.stringify(body),
         credentials: 'include', // This will handle cookies if they work
       });
@@ -245,21 +231,7 @@ function LoginPage({ children }: LoginProps) {
     }
 
     try {
-      // First try the combined authentication approach
-      try {
-        const result = await authenticate2FA(credentials.email, credentials.password, values.twoFactorToken);
-        if (result.success) {
-          const redirectTo = query.get('redirectTo');
-          const redirectUrl = redirectTo ? decodeURIComponent(redirectTo) : '/';
-          navigate(redirectUrl);
-          return;
-        }
-      } catch (combinedAuthError) {
-        // If the combined auth endpoint doesn't exist, fall back to the old approach
-        console.log('Combined auth not available, using fallback approach');
-      }
-
-      // Fallback: verify 2FA code then login separately
+      // Verify 2FA code then log in using the standard endpoint
       const result = await verify2FACode(credentials.email, values.twoFactorToken);
 
       if (!result.valid) {
