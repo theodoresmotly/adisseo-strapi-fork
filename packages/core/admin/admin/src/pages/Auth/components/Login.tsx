@@ -17,6 +17,7 @@ import { translatedErrors } from '../../../utils/translatedErrors';
 
 // Pull in the default `login` function from your Auth (Strapi's admin usage)
 import { useAuth } from '../../../features/Auth';
+import { getOrCreateDeviceId } from '../../../utils/deviceId';
 
 export interface LoginProps {
   children?: React.ReactNode;
@@ -67,6 +68,32 @@ async function verify2FACode(email: string, token: string) {
   return data; // { valid: boolean }
 }
 
+// New helper: validate credentials (only checking email/password without proceeding to full login)
+async function validateCredentials({
+  email,
+  password,
+  rememberMe,
+}: {
+  email: string;
+  password: string;
+  rememberMe: boolean;
+}): Promise<void> {
+  const resp = await fetch('/admin/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email,
+      password,
+      rememberMe,
+      deviceId: getOrCreateDeviceId(),
+    }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) {
+    throw new Error(data.error?.message || 'Invalid credentials');
+  }
+}
+
 // Define credentials type with rememberMe as required boolean.
 interface Credentials {
   email: string;
@@ -103,13 +130,6 @@ function LoginPage({ children }: LoginProps) {
         return;
       }
 
-      if (message.toLowerCase().includes('secure cookie')) {
-        setApiError(
-          'Login failed because secure cookies are required. Please serve the admin over HTTPS or disable secure cookies in configuration.'
-        );
-        return res;
-      }
-
       setApiError(message);
     } else {
       // On success, navigate to the redirect URL (or homepage).
@@ -117,16 +137,14 @@ function LoginPage({ children }: LoginProps) {
       const redirectUrl = redirectTo ? decodeURIComponent(redirectTo) : '/';
       navigate(redirectUrl);
     }
-
-    return res;
   };
 
   //
   // Step A: user clicks "Login" with email/password.
-  // We check if 2FA is enabled for this user.
+  // First, we validate the credentials.
+  // Then we check if 2FA is enabled.
   // - If 2FA is enabled, show the TFA input.
   // - If not, force mandatory 2FA setup.
-  // Note: We don't pre-validate credentials here to avoid cookie issues.
   //
   const handleSubmitEmailPassword = async (values: {
     email: string;
@@ -136,29 +154,34 @@ function LoginPage({ children }: LoginProps) {
     setApiError(undefined);
 
     try {
-      // Check 2FA status first (this doesn't require password validation)
+      // Validate credentials (will throw if email/password are invalid).
+      await validateCredentials({
+        email: values.email,
+        password: values.password,
+        rememberMe: values.rememberMe ?? true,
+      });
+
+      // Credentials are valid so now check 2FA status.
       const result = await check2FAStatus(values.email);
       if (result.twoFactorEnabled) {
         // 2FA is enabled → ask for the TFA code.
+        setShowTwoFactorInput(true);
         setCredentials({
           email: values.email,
           password: values.password,
-          rememberMe: true, // Always true
+          rememberMe: values.rememberMe ?? true,
         });
-        setShowTwoFactorInput(true);
       } else {
         // 2FA is not enabled → store credentials and force mandatory 2FA setup.
         setCredentials({
           email: values.email,
           password: values.password,
-          rememberMe: true, // Always true
+          rememberMe: values.rememberMe ?? true,
         });
         setShowTwoFactorSetup(true);
       }
     } catch (err) {
-      // If 2FA check fails, it might be because user doesn't exist
-      // or there's a server error. Show the error.
-      setApiError(err instanceof Error ? err.message : 'Failed to check user status');
+      setApiError(err instanceof Error ? err.message : 'Login failed');
     }
   };
 
@@ -166,6 +189,8 @@ function LoginPage({ children }: LoginProps) {
   // Step B: for users who already have 2FA enabled, verify the TFA code.
   //
   const handleSubmitTwoFactor = async (values: {
+    email: string;
+    password: string;
     twoFactorToken?: string;
   }) => {
     setApiError(undefined);
@@ -175,29 +200,19 @@ function LoginPage({ children }: LoginProps) {
       return;
     }
 
-    if (!credentials) {
-      setApiError('Session expired. Please start over.');
-      setShowTwoFactorInput(false);
-      return;
-    }
-
     try {
-      // Verify 2FA code then log in using the standard endpoint
-      const result = await verify2FACode(credentials.email, values.twoFactorToken);
+      const result = await verify2FACode(values.email, values.twoFactorToken);
 
       if (!result.valid) {
         setApiError('Invalid token');
         return;
       }
 
-      const loginResponse = await defaultHandleLogin({
-        email: credentials.email,
-        password: credentials.password,
-        rememberMe: credentials.rememberMe,
+      await defaultHandleLogin({
+        email: values.email,
+        password: values.password,
+        rememberMe: values.rememberMe ?? true,
       });
-      if (loginResponse && 'error' in loginResponse) {
-        return;
-      }
     } catch (err) {
       setApiError(err instanceof Error ? err.message : 'Invalid token');
     }
@@ -259,12 +274,12 @@ function LoginPage({ children }: LoginProps) {
             initialValues={{
               email: '',
               password: '',
-              rememberMe: true,
+              rememberMe: false,
               twoFactorToken: '',
             }}
             onSubmit={(values) => {
               if (!showTwoFactorInput) {
-                // Step A: Check 2FA status and then proceed accordingly.
+                // Step A: Validate credentials and then check 2FA status.
                 handleSubmitEmailPassword(values);
               } else {
                 // Step B: Verify the TFA code and then log in.
@@ -298,6 +313,14 @@ function LoginPage({ children }: LoginProps) {
                       name="password"
                       required
                       type="password"
+                    />
+                    <InputRenderer
+                      label={formatMessage({
+                        id: 'Auth.form.rememberMe.label',
+                        defaultMessage: 'Remember me',
+                      })}
+                      name="rememberMe"
+                      type="checkbox"
                     />
                   </>
                 )}
