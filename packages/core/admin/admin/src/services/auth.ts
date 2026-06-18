@@ -75,7 +75,7 @@ const authService = adminApi
         transformResponse(res: Login.Response) {
           return res.data;
         },
-        invalidatesTags: ['Me'],
+        invalidatesTags: (result) => (result?.token ? ['Me'] : []),
       }),
       logout: builder.mutation<void, { deviceId?: string } | void>({
         query: (body) => ({
