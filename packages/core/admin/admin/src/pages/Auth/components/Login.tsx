@@ -16,6 +16,8 @@ import {
 import { translatedErrors } from '../../../utils/translatedErrors';
 
 import { useAuth } from '../../../features/Auth';
+import { useTypedDispatch } from '../../../core/store/hooks';
+import { logout as logoutAction } from '../../../reducer';
 
 export interface LoginProps {
   children?: React.ReactNode;
@@ -85,6 +87,7 @@ function LoginPage({ children }: LoginProps) {
   const query = React.useMemo(() => new URLSearchParams(searchString), [searchString]);
   const navigate = useNavigate();
   const { login } = useAuth('Login', (auth) => auth);
+  const dispatch = useTypedDispatch();
 
   const redirectAfterLogin = React.useCallback(() => {
     const redirectTo = query.get('redirectTo');
@@ -103,6 +106,7 @@ function LoginPage({ children }: LoginProps) {
       }
 
       if (code === 'TWO_FACTOR_REQUIRED') {
+        dispatch(logoutAction());
         setCredentials(submittedCredentials);
         setSetupToken(undefined);
         setMode('totp');
@@ -111,6 +115,7 @@ function LoginPage({ children }: LoginProps) {
       }
 
       if (code === 'TWO_FACTOR_INVALID') {
+        dispatch(logoutAction());
         setCredentials(submittedCredentials);
         setSetupToken(undefined);
         setMode('totp');
@@ -124,6 +129,7 @@ function LoginPage({ children }: LoginProps) {
           return;
         }
 
+        dispatch(logoutAction());
         setCredentials(submittedCredentials);
         setSetupToken(nextSetupToken);
         setMode('setup');
@@ -133,7 +139,7 @@ function LoginPage({ children }: LoginProps) {
 
       setApiError(message);
     },
-    [navigate]
+    [dispatch, navigate]
   );
 
   const completeLogin = React.useCallback(
