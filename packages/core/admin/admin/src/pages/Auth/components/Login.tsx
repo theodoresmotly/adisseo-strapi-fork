@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Box, Button, Flex, Main, Typography, Link } from '@strapi/design-system';
+import { Box, Button, Flex, Link, Main, Typography } from '@strapi/design-system';
 import camelCase from 'lodash/camelCase';
 import { useIntl } from 'react-intl';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
@@ -9,21 +9,18 @@ import { Form } from '../../../components/Form';
 import { InputRenderer } from '../../../components/FormInputs/Renderer';
 import { Logo } from '../../../components/UnauthenticatedLogo';
 import {
-  UnauthenticatedLayout,
   Column,
   LayoutContent,
+  UnauthenticatedLayout,
 } from '../../../layouts/UnauthenticatedLayout';
 import { translatedErrors } from '../../../utils/translatedErrors';
 
-// Pull in the default `login` function from your Auth (Strapi's admin usage)
 import { useAuth } from '../../../features/Auth';
-import { getOrCreateDeviceId } from '../../../utils/deviceId';
 
 export interface LoginProps {
   children?: React.ReactNode;
 }
 
-// Validation schema for email/password
 const LOGIN_SCHEMA = yup.object().shape({
   email: yup
     .string()
@@ -37,201 +34,178 @@ const LOGIN_SCHEMA = yup.object().shape({
   rememberMe: yup.bool().nullable(),
 });
 
-// Helper: call /deploy-plugin/tfa-check-status (POST) with { email }
-async function check2FAStatus(email: string) {
-  const resp = await fetch('/deploy-plugin/tfa-check-status', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email }),
-  });
-
-  if (!resp.ok) {
-    const error = await resp.json();
-    throw new Error(error?.message || 'Failed to check 2FA status');
-  }
-
-  return await resp.json(); // { twoFactorEnabled: boolean }
-}
-
-// Helper: call /deploy-plugin/tfa-check-code (POST) with { email, token }
-async function verify2FACode(email: string, token: string) {
-  const resp = await fetch('/deploy-plugin/tfa-check-code', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, token }),
-  });
-
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data?.message || 'Invalid 2FA token');
-  }
-  return data; // { valid: boolean }
-}
-
-// New helper: validate credentials (only checking email/password without proceeding to full login)
-async function validateCredentials({
-  email,
-  password,
-  rememberMe,
-}: {
-  email: string;
-  password: string;
-  rememberMe: boolean;
-}): Promise<void> {
-  const resp = await fetch('/admin/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email,
-      password,
-      rememberMe,
-      deviceId: getOrCreateDeviceId(),
-    }),
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error?.message || 'Invalid credentials');
-  }
-}
-
-// Define credentials type with rememberMe as required boolean.
 interface Credentials {
   email: string;
   password: string;
   rememberMe: boolean;
 }
 
+interface LoginFormValues extends Credentials {
+  twoFactorToken?: string;
+}
+
+interface ApiErrorWithDetails {
+  message?: string;
+  details?: {
+    code?: string;
+    setupToken?: string;
+  };
+}
+
+type LoginMode = 'credentials' | 'totp' | 'setup';
+
+const getErrorDetails = (error: unknown) => {
+  const apiError = error as ApiErrorWithDetails;
+
+  return {
+    code: apiError.details?.code,
+    message: apiError.message ?? 'Something went wrong',
+    setupToken: apiError.details?.setupToken,
+  };
+};
+
+const getResponseErrorMessage = async (response: Response, fallback: string) => {
+  try {
+    const data = await response.json();
+
+    return data?.error?.message || data?.message || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
 function LoginPage({ children }: LoginProps) {
   const [apiError, setApiError] = React.useState<string>();
-  const [showTwoFactorInput, setShowTwoFactorInput] = React.useState(false);
-  const [showTwoFactorSetup, setShowTwoFactorSetup] = React.useState(false);
-  // Store the credentials so we can pass them to the 2FA setup flow
+  const [mode, setMode] = React.useState<LoginMode>('credentials');
   const [credentials, setCredentials] = React.useState<Credentials | null>(null);
+  const [setupToken, setSetupToken] = React.useState<string>();
 
   const { formatMessage } = useIntl();
   const { search: searchString } = useLocation();
   const query = React.useMemo(() => new URLSearchParams(searchString), [searchString]);
   const navigate = useNavigate();
-
-  // Default Strapi Admin `login` from useAuth
   const { login } = useAuth('Login', (auth) => auth);
 
-  // Default login handler that calls the standard admin login endpoint.
-  const defaultHandleLogin = async (body: { email: string; password: string; rememberMe: boolean }) => {
-    setApiError(undefined);
+  const redirectAfterLogin = React.useCallback(() => {
+    const redirectTo = query.get('redirectTo');
+    const redirectUrl = redirectTo ? decodeURIComponent(redirectTo) : '/';
 
-    const res = await login(body);
+    navigate(redirectUrl);
+  }, [navigate, query]);
 
-    if ('error' in res) {
-      const message = res.error.message ?? 'Something went wrong';
+  const handleLoginError = React.useCallback(
+    (error: unknown, submittedCredentials: Credentials) => {
+      const { code, message, setupToken: nextSetupToken } = getErrorDetails(error);
 
       if (camelCase(message).toLowerCase() === 'usernotactive') {
         navigate('/auth/oops');
         return;
       }
 
-      setApiError(message);
-    } else {
-      // On success, navigate to the redirect URL (or homepage).
-      const redirectTo = query.get('redirectTo');
-      const redirectUrl = redirectTo ? decodeURIComponent(redirectTo) : '/';
-      navigate(redirectUrl);
-    }
-  };
-
-  //
-  // Step A: user clicks "Login" with email/password.
-  // First, we validate the credentials.
-  // Then we check if 2FA is enabled.
-  // - If 2FA is enabled, show the TFA input.
-  // - If not, force mandatory 2FA setup.
-  //
-  const handleSubmitEmailPassword = async (values: {
-    email: string;
-    password: string;
-    rememberMe?: boolean;
-  }) => {
-    setApiError(undefined);
-
-    try {
-      // Validate credentials (will throw if email/password are invalid).
-      await validateCredentials({
-        email: values.email,
-        password: values.password,
-        rememberMe: values.rememberMe ?? true,
-      });
-
-      // Credentials are valid so now check 2FA status.
-      const result = await check2FAStatus(values.email);
-      if (result.twoFactorEnabled) {
-        // 2FA is enabled → ask for the TFA code.
-        setShowTwoFactorInput(true);
-        setCredentials({
-          email: values.email,
-          password: values.password,
-          rememberMe: values.rememberMe ?? true,
-        });
-      } else {
-        // 2FA is not enabled → store credentials and force mandatory 2FA setup.
-        setCredentials({
-          email: values.email,
-          password: values.password,
-          rememberMe: values.rememberMe ?? true,
-        });
-        setShowTwoFactorSetup(true);
-      }
-    } catch (err) {
-      setApiError(err instanceof Error ? err.message : 'Login failed');
-    }
-  };
-
-  //
-  // Step B: for users who already have 2FA enabled, verify the TFA code.
-  //
-  const handleSubmitTwoFactor = async (values: {
-    email: string;
-    password: string;
-    twoFactorToken?: string;
-  }) => {
-    setApiError(undefined);
-
-    if (!values.twoFactorToken) {
-      setApiError('2FA token is required');
-      return;
-    }
-
-    try {
-      const result = await verify2FACode(values.email, values.twoFactorToken);
-
-      if (!result.valid) {
-        setApiError('Invalid token');
+      if (code === 'TWO_FACTOR_REQUIRED') {
+        setCredentials(submittedCredentials);
+        setSetupToken(undefined);
+        setMode('totp');
+        setApiError(undefined);
         return;
       }
 
-      await defaultHandleLogin({
-        email: values.email,
-        password: values.password,
-        rememberMe: true,
-      });
-    } catch (err) {
-      setApiError(err instanceof Error ? err.message : 'Invalid token');
-    }
+      if (code === 'TWO_FACTOR_INVALID') {
+        setCredentials(submittedCredentials);
+        setSetupToken(undefined);
+        setMode('totp');
+        setApiError('Invalid two-factor authentication code');
+        return;
+      }
+
+      if (code === 'TWO_FACTOR_SETUP_REQUIRED') {
+        if (typeof nextSetupToken !== 'string' || nextSetupToken.length === 0) {
+          setApiError('Two-factor setup is required, but the setup token was not returned.');
+          return;
+        }
+
+        setCredentials(submittedCredentials);
+        setSetupToken(nextSetupToken);
+        setMode('setup');
+        setApiError(undefined);
+        return;
+      }
+
+      setApiError(message);
+    },
+    [navigate]
+  );
+
+  const completeLogin = React.useCallback(
+    async (body: Credentials & { twoFactorToken?: string }) => {
+      setApiError(undefined);
+
+      const res = await login(body);
+
+      if ('error' in res) {
+        const { twoFactorToken: _twoFactorToken, ...submittedCredentials } = body;
+        handleLoginError(res.error, submittedCredentials);
+        return;
+      }
+
+      redirectAfterLogin();
+    },
+    [handleLoginError, login, redirectAfterLogin]
+  );
+
+  const handleSubmitCredentials = async (values: LoginFormValues) => {
+    await completeLogin({
+      email: values.email,
+      password: values.password,
+      rememberMe: values.rememberMe ?? false,
+    });
   };
 
-  // If the user must complete 2FA setup, render the TwoFactorSetup component.
-  if (showTwoFactorSetup && credentials) {
-    return (
-      <TwoFactorSetup
-        email={credentials.email}
-        onSetupComplete={async () => {
-          // Once 2FA setup is complete, complete the login.
-          await defaultHandleLogin(credentials);
-        }}
-      />
-    );
+  const handleSubmitTwoFactor = async (values: LoginFormValues) => {
+    if (!credentials) {
+      setMode('credentials');
+      setApiError('Please enter your email and password again.');
+      return;
+    }
+
+    if (!values.twoFactorToken) {
+      setApiError('Two-factor authentication code is required');
+      return;
+    }
+
+    await completeLogin({
+      ...credentials,
+      twoFactorToken: values.twoFactorToken,
+    });
+  };
+
+  const handleSetupComplete = async (twoFactorToken: string) => {
+    if (!credentials) {
+      setMode('credentials');
+      setApiError('Please enter your email and password again.');
+      return;
+    }
+
+    await completeLogin({
+      ...credentials,
+      twoFactorToken,
+    });
+  };
+
+  const initialValues = React.useMemo<LoginFormValues>(
+    () => ({
+      email: credentials?.email ?? '',
+      password: credentials?.password ?? '',
+      rememberMe: credentials?.rememberMe ?? false,
+      twoFactorToken: '',
+    }),
+    [credentials]
+  );
+
+  if (mode === 'setup' && setupToken) {
+    return <TwoFactorSetup setupToken={setupToken} onSetupComplete={handleSetupComplete} />;
   }
 
-  // Otherwise, render the normal login form.
   return (
     <UnauthenticatedLayout>
       <Main>
@@ -271,26 +245,19 @@ function LoginPage({ children }: LoginProps) {
 
           <Form
             method="PUT"
-            initialValues={{
-              email: '',
-              password: '',
-              rememberMe: false,
-              twoFactorToken: '',
-            }}
+            initialValues={initialValues}
             onSubmit={(values) => {
-              if (!showTwoFactorInput) {
-                // Step A: Validate credentials and then check 2FA status.
-                handleSubmitEmailPassword(values);
+              if (mode === 'credentials') {
+                handleSubmitCredentials(values as LoginFormValues);
               } else {
-                // Step B: Verify the TFA code and then log in.
-                handleSubmitTwoFactor(values);
+                handleSubmitTwoFactor(values as LoginFormValues);
               }
             }}
             validationSchema={LOGIN_SCHEMA}
           >
             {() => (
               <Flex direction="column" alignItems="stretch" gap={6}>
-                {!showTwoFactorInput && (
+                {mode === 'credentials' && (
                   <>
                     <InputRenderer
                       label={formatMessage({
@@ -325,9 +292,9 @@ function LoginPage({ children }: LoginProps) {
                   </>
                 )}
 
-                {showTwoFactorInput && (
+                {mode === 'totp' && (
                   <InputRenderer
-                    label="Enter your 2FA code"
+                    label="Two-factor authentication code"
                     name="twoFactorToken"
                     required
                     type="string"
@@ -335,7 +302,7 @@ function LoginPage({ children }: LoginProps) {
                 )}
 
                 <Button fullWidth type="submit">
-                  {showTwoFactorInput ? 'Verify 2FA & Login' : 'Login'}
+                  {mode === 'totp' ? 'Verify 2FA and log in' : 'Login'}
                 </Button>
               </Flex>
             )}
@@ -358,148 +325,171 @@ function LoginPage({ children }: LoginProps) {
 }
 
 interface TwoFactorSetupProps {
-  email: string;
-  onSetupComplete: () => void;
+  setupToken: string;
+  onSetupComplete: (twoFactorToken: string) => Promise<void>;
 }
 
-// TwoFactorSetup forces the user to set up 2FA if it isn’t enabled.
-function TwoFactorSetup({ email, onSetupComplete }: TwoFactorSetupProps) {
+function TwoFactorSetup({ setupToken, onSetupComplete }: TwoFactorSetupProps) {
   const [qrCode, setQrCode] = React.useState<string>('');
   const [token, setToken] = React.useState<string>('');
-  const [message2FA, setMessage2FA] = React.useState<string>('');
-  // Instead of fetching admin user info, we use the email passed in.
-  const [adminEmail] = React.useState<string>(email);
+  const [message, setMessage] = React.useState<string>('');
   const [isLoading, setIsLoading] = React.useState<boolean>(false);
-  const [twoFactorEnabled, setTwoFactorEnabled] = React.useState<boolean>(false);
   const { formatMessage } = useIntl();
 
-  // Check if 2FA is enabled (using the provided email).
   React.useEffect(() => {
-    const checkStatus = async () => {
-      if (!adminEmail) return;
-      try {
-        const res = await fetch('/deploy-plugin/tfa-check-status', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: adminEmail }),
-        });
-        if (!res.ok) {
-          throw new Error('Failed to check 2FA status');
-        }
-        const data = await res.json();
-        setTwoFactorEnabled(data.twoFactorEnabled);
-      } catch (error: any) {
-        console.error('Error checking 2FA status:', error);
-        setTwoFactorEnabled(false);
-      }
-    };
-    if (adminEmail) {
-      checkStatus();
-    }
-  }, [adminEmail]);
+    let cancelled = false;
 
-  // If 2FA is not enabled, fetch the QR code.
-  React.useEffect(() => {
-    const fetchQr = async () => {
-      if (!adminEmail) return;
+    const fetchQrCode = async () => {
+      setMessage('');
+      setIsLoading(true);
+
       try {
-        const res = await fetch('/deploy-plugin/tfa-setup', {
+        const response = await fetch('/deploy-plugin/tfa-setup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userEmail: adminEmail }),
+          body: JSON.stringify({ setupToken }),
         });
-        if (!res.ok) {
-          throw new Error('Failed to fetch QR code');
+
+        if (!response.ok) {
+          throw new Error(await getResponseErrorMessage(response, 'Failed to start 2FA setup'));
         }
-        const data = await res.json();
-        setQrCode(data.qrCode);
-      } catch (error: any) {
-        console.error('Failed to fetch QR code:', error);
-        setMessage2FA('Error fetching QR code.');
+
+        const data = await response.json();
+
+        if (!cancelled) {
+          setQrCode(data.qrCode);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : 'Failed to start 2FA setup');
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     };
-    if (!twoFactorEnabled && adminEmail) {
-      fetchQr();
-    }
-  }, [twoFactorEnabled, adminEmail]);
+
+    fetchQrCode();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setupToken]);
 
   const verify = async () => {
+    if (!token) {
+      setMessage('Two-factor authentication code is required');
+      return;
+    }
+
+    setMessage('');
     setIsLoading(true);
+
     try {
-      const res = await fetch('/deploy-plugin/tfa-verify-setup', {
+      const response = await fetch('/deploy-plugin/tfa-verify-setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userEmail: adminEmail,
+          setupToken,
           token,
         }),
       });
-      if (!res.ok) {
-        throw new Error('Verification failed. Please check the TOTP code and try again.');
+
+      if (!response.ok) {
+        throw new Error(
+          await getResponseErrorMessage(
+            response,
+            'Verification failed. Please check the code and try again.'
+          )
+        );
       }
-      const data = await res.json();
-      if (data.enabled) {
-        setMessage2FA('2FA Enabled Successfully!');
-        setTwoFactorEnabled(true);
-        onSetupComplete();
-      } else {
-        setMessage2FA('Verification failed. Please try again.');
+
+      const data = await response.json();
+
+      if (!data.enabled) {
+        throw new Error('Verification failed. Please check the code and try again.');
       }
-    } catch (error: any) {
-      setMessage2FA(error.message);
+
+      await onSetupComplete(token);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Verification failed');
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <Box padding={6}>
-      <Typography variant="alpha">Two-Factor Authentication Setup</Typography>
-      <br />
-      {message2FA && (
-        <Typography textColor="danger600" variant="epsilon">
-          {message2FA}
-        </Typography>
-      )}
-      <br />
-      {!qrCode ? (
-        <Typography>Loading QR code...</Typography>
-      ) : (
-        <Box>
-          <Box paddingTop={4}>
-            <Typography variant="beta">
-              Scan this QR code with your authenticator app:
-            </Typography>
-            <Box paddingTop={2}>
-              <img
-                src={qrCode}
-                alt="QR Code for 2FA Setup"
-                style={{ maxWidth: '200px', border: '1px solid #ccc' }}
-              />
+    <UnauthenticatedLayout>
+      <Main>
+        <LayoutContent>
+          <Column>
+            <Logo />
+            <Box paddingTop={6} paddingBottom={1}>
+              <Typography variant="alpha" tag="h1" textAlign="center">
+                Two-factor authentication
+              </Typography>
             </Box>
-          </Box>
-          <Box paddingTop={4}>
-            <Typography>
-              After scanning, enter the TOTP code from your authenticator app:
-            </Typography>
-            <Box paddingTop={2}>
-              <input
-                type="text"
-                placeholder="Enter your TOTP code"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                style={{ padding: '8px', fontSize: '1rem', width: '100%' }}
-              />
+            <Box paddingBottom={7}>
+              <Typography
+                variant="epsilon"
+                textColor="neutral600"
+                textAlign="center"
+                display="block"
+              >
+                {formatMessage({
+                  id: 'Auth.form.welcome.subtitle',
+                  defaultMessage: 'Log in to your Strapi account',
+                })}
+              </Typography>
             </Box>
-            <Box paddingTop={2}>
-              <Button onClick={verify} disabled={isLoading}>
-                Verify & Enable 2FA
-              </Button>
-            </Box>
-          </Box>
-        </Box>
-      )}
-    </Box>
+            {message && (
+              <Typography id="global-form-error" role="alert" tabIndex={-1} textColor="danger600">
+                {message}
+              </Typography>
+            )}
+          </Column>
+
+          <Flex direction="column" alignItems="stretch" gap={6}>
+            {!qrCode ? (
+              <Typography textColor="neutral600">
+                {isLoading ? 'Loading QR code...' : 'Unable to load QR code.'}
+              </Typography>
+            ) : (
+              <>
+                <Flex justifyContent="center">
+                  <img
+                    src={qrCode}
+                    alt="QR code for two-factor authentication setup"
+                    style={{ maxWidth: '200px', border: '1px solid #dcdce4' }}
+                  />
+                </Flex>
+                <Box>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    placeholder="Enter your authentication code"
+                    value={token}
+                    onChange={(event) => setToken(event.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      border: '1px solid #dcdce4',
+                      borderRadius: '4px',
+                      fontSize: '1rem',
+                    }}
+                  />
+                </Box>
+                <Button onClick={verify} disabled={isLoading} fullWidth>
+                  Verify and log in
+                </Button>
+              </>
+            )}
+          </Flex>
+        </LayoutContent>
+      </Main>
+    </UnauthenticatedLayout>
   );
 }
 

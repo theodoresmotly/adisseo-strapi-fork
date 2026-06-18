@@ -12,6 +12,7 @@ export declare namespace Login {
     body: Pick<AdminUser, 'email' | 'password'> & {
       deviceId?: string;
       rememberMe?: boolean;
+      twoFactorToken?: string;
     };
   }
 

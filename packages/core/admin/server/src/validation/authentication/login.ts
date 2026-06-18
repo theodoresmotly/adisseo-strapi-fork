@@ -9,6 +9,7 @@ const schema = yup
   .shape({
     deviceId: yup.string().uuid().optional(),
     rememberMe: yup.boolean().optional(),
+    twoFactorToken: yup.string().trim().optional(),
   })
   // Allow other properties (like email/password) to be present
   .noUnknown(false);
