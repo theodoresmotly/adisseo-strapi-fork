@@ -48,6 +48,28 @@ type PreloadState = Partial<{
   admin_app: AppState;
 }>;
 
+const TWO_FACTOR_LOGIN_CHALLENGE_CODES = new Set([
+  'TWO_FACTOR_REQUIRED',
+  'TWO_FACTOR_INVALID',
+  'TWO_FACTOR_SETUP_REQUIRED',
+]);
+
+const isTwoFactorLoginChallenge = (action: unknown) => {
+  const maybeAction = action as {
+    meta?: { arg?: { endpointName?: string } };
+    payload?: { status?: number; details?: { code?: string } };
+  };
+
+  const code = maybeAction.payload?.details?.code;
+
+  return (
+    maybeAction.meta?.arg?.endpointName === 'login' &&
+    maybeAction.payload?.status === 401 &&
+    typeof code === 'string' &&
+    TWO_FACTOR_LOGIN_CHALLENGE_CODES.has(code)
+  );
+};
+
 /**
  * @description This is the main store configuration function, injected Reducers use our legacy app.addReducer API,
  * which we're trying to phase out. App Middlewares could potentially be improved...?
@@ -91,7 +113,11 @@ const rtkQueryUnauthorizedMiddleware: Middleware =
   (next) =>
   (action) => {
     // isRejectedWithValue Or isRejected
-    if (isRejected(action) && action.payload?.status === 401) {
+    if (
+      isRejected(action) &&
+      action.payload?.status === 401 &&
+      !isTwoFactorLoginChallenge(action)
+    ) {
       dispatch(logout());
       const basename = getBasename();
       window.location.href = `${basename}/auth/login`;
