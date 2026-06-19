@@ -457,6 +457,9 @@ function TwoFactorSetup({ setupToken, onSetupComplete }: TwoFactorSetupProps) {
           </Column>
 
           <Flex direction="column" alignItems="stretch" gap={6}>
+            <Typography textColor="neutral600" textAlign="center">
+              For security, every admin must set up two-factor authentication again after the latest security update.
+            </Typography>
             {!qrCode ? (
               <Typography textColor="neutral600">
                 {isLoading ? 'Loading QR code...' : 'Unable to load QR code.'}
