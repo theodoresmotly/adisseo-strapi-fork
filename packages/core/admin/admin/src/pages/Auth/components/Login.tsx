@@ -437,17 +437,23 @@ function TwoFactorSetup({ setupToken, onSetupComplete }: TwoFactorSetupProps) {
               </Typography>
             </Box>
             <Box paddingBottom={7}>
-              <Typography
-                variant="epsilon"
-                textColor="neutral600"
-                textAlign="center"
-                display="block"
-              >
-                {formatMessage({
-                  id: 'Auth.form.welcome.subtitle',
-                  defaultMessage: 'Log in to your Strapi account',
-                })}
-              </Typography>
+              <Flex direction="column" gap={2}>
+                <Typography
+                  variant="epsilon"
+                  textColor="neutral600"
+                  textAlign="center"
+                  display="block"
+                >
+                  {formatMessage({
+                    id: 'Auth.form.welcome.subtitle',
+                    defaultMessage: 'Log in to your Strapi account',
+                  })}
+                </Typography>
+                <Typography textColor="neutral600" textAlign="center" display="block">
+                  You must reset your two-factor authentication after the
+                  latest security update.
+                </Typography>
+              </Flex>
             </Box>
             {message && (
               <Typography id="global-form-error" role="alert" tabIndex={-1} textColor="danger600">
@@ -457,9 +463,6 @@ function TwoFactorSetup({ setupToken, onSetupComplete }: TwoFactorSetupProps) {
           </Column>
 
           <Flex direction="column" alignItems="stretch" gap={6}>
-            <Typography textColor="neutral600" textAlign="center">
-              For security, every admin must set up two-factor authentication again after the latest security update.
-            </Typography>
             {!qrCode ? (
               <Typography textColor="neutral600">
                 {isLoading ? 'Loading QR code...' : 'Unable to load QR code.'}
